@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Safe deployment and verification script for AISafeGuard.
-Includes directory guardrails, backup/rollback, dry-run tests, and confirmation prompt.
+Fix script for AISafeGuard:
+1. Fixes regex syntax in aisafeguard.py
+2. Updates README.md to use the real GitHub Actions status badge
+3. Verifies unit tests & self-scan locally before asking to push
 """
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-# ใช้ Raw String (r'''...''') เพื่อป้องกันปัญหา Backslash / Quote Escaping 100%
-CLEAN_AISAFEGUARD_CODE = r'''#!/usr/bin/env python3
+CLEAN_AISAFEGUARD = r'''#!/usr/bin/env python3
 """
 AISafeGuard - Lightweight Security & Secret Scanner for AI-Generated Code.
 License: MIT
@@ -156,50 +156,52 @@ if __name__ == "__main__":
 
 def main() -> None:
     cwd = Path.cwd()
-    # 1. Pre-condition Folder Guardrail
     if cwd.name.lower() != "aisafeguard" or not (cwd / ".git").exists():
-        print(f"[BLOCKED] Current directory is '{cwd}'.")
-        print("Please run this script inside 'C:\\Users\\nts\\.gemini\\aisafeguard' only.")
+        print(f"[BLOCKED] Current folder is '{cwd}'. Run inside 'aisafeguard' repository only.")
         sys.exit(1)
 
-    target_file = cwd / "aisafeguard.py"
-    backup_file = cwd / "aisafeguard.py.bak"
+    scanner_path = cwd / "aisafeguard.py"
+    readme_path = cwd / "README.md"
+    backup_path = cwd / "aisafeguard.py.bak"
 
-    # 2. Backup existing file (Rollback preparation)
-    if target_file.exists():
-        shutil.copy2(target_file, backup_file)
-        print("[1/4] Backed up existing aisafeguard.py -> aisafeguard.py.bak")
+    if scanner_path.exists():
+        shutil.copy2(scanner_path, backup_path)
 
     try:
-        # 3. Write clean code and run dry-run verification
-        target_file.write_text(CLEAN_AISAFEGUARD_CODE.lstrip(), encoding="utf-8")
-        print("[2/4] Wrote clean aisafeguard.py. Running verification checks...")
+        # 1. Write clean aisafeguard.py
+        scanner_path.write_text(CLEAN_AISAFEGUARD.lstrip(), encoding="utf-8")
 
-        # Check 1: Unit tests
+        # 2. Update README badge to real GitHub Actions badge
+        if readme_path.exists():
+            readme_text = readme_path.read_text(encoding="utf-8")
+            readme_text = readme_text.replace(
+                "[![Security CI](https://img.shields.io/badge/CI-Passing-brightgreen.svg)]()",
+                "[![Security CI](https://github.com/natanun/aisafeguard/actions/workflows/ci.yml/badge.svg)](https://github.com/natanun/aisafeguard/actions/workflows/ci.yml)",
+            )
+            readme_path.write_text(readme_text, encoding="utf-8")
+
+        # 3. Run exact CI commands locally to verify 100% pass before committing
+        print("Running Unit Tests...")
         subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], check=True)
-        # Check 2: Self security scan (exact command used by GitHub Actions)
+
+        print("Running Self Security Scan...")
         subprocess.run([sys.executable, "aisafeguard.py", "."], check=True)
-        print("[3/4] All unit tests and self-scan passed 100%!")
 
     except subprocess.CalledProcessError:
-        print("[ERROR] Verification failed! Rolling back to backup...")
-        if backup_file.exists():
-            shutil.move(str(backup_file), str(target_file))
+        print("[ERROR] Local verification failed! Restoring backup...")
+        if backup_path.exists():
+            shutil.move(str(backup_path), str(scanner_path))
         sys.exit(1)
 
-    # Remove backup after successful verification
-    if backup_file.exists():
-        backup_file.unlink()
+    if backup_path.exists():
+        backup_path.unlink()
 
-    # 4. Confirmation Prompt before Git Push
-    ans = input("\n[4/4] Ready to commit and push to GitHub (origin/main)? [y/N]: ").strip().lower()
+    ans = input("\nVerification passed 100%! Commit and push to GitHub now? [y/N]: ").strip().lower()
     if ans == "y":
-        subprocess.run(["git", "add", "aisafeguard.py", "auto_setup.py"], check=True)
-        subprocess.run(["git", "commit", "-m", "fix: resolve regex syntax and exclude setup script from self-scan"], check=True)
+        subprocess.run(["git", "add", "aisafeguard.py", "README.md", "auto_setup.py"], check=True)
+        subprocess.run(["git", "commit", "-m", "fix: resolve regex syntax error and use real GitHub Actions badge"], check=True)
         subprocess.run(["git", "push", "origin", "main"], check=True)
-        print("\n[SUCCESS] Pushed to GitHub successfully!")
-    else:
-        print("\n[SKIPPED] File updated locally, but git push was cancelled by user.")
+        print("[SUCCESS] Pushed to GitHub!")
 
 
 if __name__ == "__main__":

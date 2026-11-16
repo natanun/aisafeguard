@@ -1,7 +1,7 @@
 # 🛡️ AISafeGuard: Safety Scanner for AI-Generated Code
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Security CI](https://img.shields.io/badge/CI-Passing-brightgreen.svg)]()
+[![Security CI](https://github.com/natanun/aisafeguard/actions/workflows/ci.yml/badge.svg)](https://github.com/natanun/aisafeguard/actions/workflows/ci.yml)
 
 **AISafeGuard** is a fast, zero-dependency Static Application Security Testing (SAST) CLI tool designed to catch security vulnerabilities, unsafe execution patterns, and hardcoded secrets commonly introduced by AI coding assistants before they reach production.
 
