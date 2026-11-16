@@ -1,0 +1,21 @@
+name: AISafeGuard Security CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Unit Tests
+        run: python3 -m unittest discover -v
+      - name: Run Self Security Scan
+        run: python3 aisafeguard.py .
