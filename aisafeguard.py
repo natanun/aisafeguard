@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -18,6 +18,7 @@ class Finding:
     snippet: str
     remediation: str
 
+# กฎความปลอดภัยใหม่ที่ครอบคลุม HTML/JS Secrets เพิ่มเติม
 SECURITY_RULES = [
     {
         "id": "ASG001",
@@ -28,11 +29,19 @@ SECURITY_RULES = [
         "remediation": "Move secrets to environment variables (os.environ) or a secrets manager."
     },
     {
+        "id": "ASG001_WEB",
+        "cwe": "CWE-798",
+        "severity": "CRITICAL",
+        "description": "Exposed credentials in HTML/JS tags",
+        "pattern": re.compile(r"(password\\s*=\\s*['\\\"][^'\\\"]+['\\\"]|db_password|client_secret)"),
+        "remediation": "Avoid embedding secrets in client-side script tags or static markup."
+    },
+    {
         "id": "ASG002",
         "cwe": "CWE-94",
         "severity": "HIGH",
         "description": "Arbitrary code execution via eval() or exec()",
-        "pattern": re.compile(r"\b(eval|exec)\s*\("),
+        "pattern": re.compile(r"\\b(eval|exec)\\s*\\("),
         "remediation": "Avoid eval()/exec() on untrusted input; use ast.literal_eval() or safe parsers."
     },
     {
@@ -40,7 +49,7 @@ SECURITY_RULES = [
         "cwe": "CWE-78",
         "severity": "HIGH",
         "description": "OS Command Injection risk via shell=True or os.system",
-        "pattern": re.compile(r"(subprocess\.(Popen|run|call)\s*\([^)]*shell\s*=\s*True|os\.system\s*\()"),
+        "pattern": re.compile(r"(subprocess\\.(Popen|run|call)\\s*\\([^)]*shell\\s*=\\s*True|os\\.system\\s*\\()"),
         "remediation": "Use subprocess.run() with a list of arguments and shell=False."
     },
     {
@@ -48,7 +57,7 @@ SECURITY_RULES = [
         "cwe": "CWE-89",
         "severity": "HIGH",
         "description": "Potential SQL Injection via string interpolation in SQL query",
-        "pattern": re.compile(r"(execute|cursor\.execute)\s*\(\s*(f['\"]|['\"].*%\s*)\b(SELECT|INSERT|UPDATE|DELETE)\b", re.IGNORECASE),
+        "pattern": re.compile(r"(execute|cursor\\.execute)\\s*\\(\\s*(f[\'\\"]|[\'\\"].*%\\s*)\\b(SELECT|INSERT|UPDATE|DELETE)\\b", re.IGNORECASE),
         "remediation": "Use parameterized queries (e.g., cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,)))."
     },
     {
@@ -56,7 +65,7 @@ SECURITY_RULES = [
         "cwe": "CWE-502",
         "severity": "HIGH",
         "description": "Insecure deserialization using pickle or unsafe yaml.load",
-        "pattern": re.compile(r"(pickle\.(loads|load)\s*\(|yaml\.load\s*\([^)]*(?!Loader\s*=\s*yaml\.SafeLoader))"),
+        "pattern": re.compile(r"(pickle\\.(loads|load)\\s*\\(|yaml\\.load\\s*\\([^)]*(?!Loader\\s*=\\s*yaml\\.SafeLoader))"),
         "remediation": "Use json or yaml.safe_load() instead of untrusted pickle/yaml.load."
     },
     {
@@ -64,7 +73,7 @@ SECURITY_RULES = [
         "cwe": "CWE-327",
         "severity": "MEDIUM",
         "description": "Use of weak cryptographic hash function (MD5/SHA1)",
-        "pattern": re.compile(r"hashlib\.(md5|sha1)\s*\("),
+        "pattern": re.compile(r"hashlib\\.(md5|sha1)\\s*\\("),
         "remediation": "Use strong cryptographic hashes such as hashlib.sha256() or bcrypt/argon2 for passwords."
     }
 ]
@@ -117,12 +126,12 @@ def main():
         if not findings:
             print("✅ AISafeGuard: No security issues found.")
         else:
-            print(f"⚠️ AISafeGuard detected {len(findings)} security issue(s):\n")
+            print(f"⚠️ AISafeGuard detected {len(findings)} security issue(s):\\n")
             for f in findings:
                 print(f"[{f.severity}] {f.rule_id} ({f.cwe}) in {f.file}:{f.line}")
                 print(f"  Issue: {f.description}")
                 print(f"  Code : {f.snippet}")
-                print(f"  Fix  : {f.remediation}\n")
+                print(f"  Fix  : {f.remediation}\\n")
             sys.exit(1)
 
 if __name__ == "__main__":
