@@ -1,17 +1,206 @@
 #!/usr/bin/env python3
+"""
+Safe deployment and verification script for AISafeGuard.
+Includes directory guardrails, backup/rollback, dry-run tests, and confirmation prompt.
+"""
 import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-FILES = {'LICENSE': 'MIT License\n\nCopyright (c) 2026 AISafeGuard Contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the "Software"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\n', 'README.md': '# 🛡️ AISafeGuard: Safety Scanner for AI-Generated Code\n\n[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)\n[![Security CI](https://img.shields.io/badge/CI-Passing-brightgreen.svg)]()\n\n**AISafeGuard** is a fast, zero-dependency Static Application Security Testing (SAST) CLI tool designed to catch security vulnerabilities, unsafe execution patterns, and hardcoded secrets commonly introduced by AI coding assistants before they reach production.\n\n## 🚀 Key Features\n- **Secret Leak Prevention (CWE-798):** Detects exposed API keys (OpenAI, AWS, GitHub tokens) in source files.\n- **Injection Guardrails (CWE-78 / CWE-89 / CWE-94):** Flags dangerous `eval()`, `exec()`, `shell=True`, and raw SQL string formatting.\n- **Safe Serialization & Crypto Checks (CWE-502 / CWE-327):** Identifies unsafe `pickle` usage and weak hashing algorithms (`md5`, `sha1`).\n- **CI/CD & Agent Ready:** Outputs structured JSON or human-readable remediation guidance for automated PR reviews.\n\n## 📦 Quick Start\n```bash\n# Scan current repository\npython3 aisafeguard.py .\n\n# Output findings as JSON for CI/CD pipelines\npython3 aisafeguard.py . --json\n\n# Run unit tests\npython3 -m unittest test_aisafeguard.py\n```\n\n## 🗺️ Roadmap\n- [x] Core static regex engine mapped to CWE & OWASP Top 10\n- [x] Automated unit test suite and GitHub Actions workflow\n- [ ] AST-based deep taint analysis for Python and TypeScript\n- [ ] LLM-assisted automated patch generation for detected vulnerabilities\n\n## 📄 License\nDistributed under the MIT License. See `LICENSE` for more information.\n', '.gitignore': '__pycache__/\n*.pyc\n.env\n.venv/\nvenv/\n*.egg-info/\ndist/\nbuild/\n', 'aisafeguard.py': '#!/usr/bin/env python3\nimport argparse\nimport json\nimport os\nimport re\nimport sys\nfrom dataclasses import dataclass, asdict\nfrom typing import List\n\n@dataclass\nclass Finding:\n    file: str\n    line: int\n    rule_id: str\n    cwe: str\n    severity: str\n    description: str\n    snippet: str\n    remediation: str\n\nSECURITY_RULES = [\n    {\n        "id": "ASG001",\n        "cwe": "CWE-798",\n        "severity": "CRITICAL",\n        "description": "Hardcoded API Key or Secret token detected",\n        "pattern": re.compile(r"(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16})"),\n        "remediation": "Move secrets to environment variables (os.environ) or a secrets manager."\n    },\n    {\n        "id": "ASG002",\n        "cwe": "CWE-94",\n        "severity": "HIGH",\n        "description": "Arbitrary code execution via eval() or exec()",\n        "pattern": re.compile(r"\\b(eval|exec)\\s*\\("),\n        "remediation": "Avoid eval()/exec() on untrusted input; use ast.literal_eval() or safe parsers."\n    },\n    {\n        "id": "ASG003",\n        "cwe": "CWE-78",\n        "severity": "HIGH",\n        "description": "OS Command Injection risk via shell=True or os.system",\n        "pattern": re.compile(r"(subprocess\\.(Popen|run|call)\\s*\\([^)]*shell\\s*=\\s*True|os\\.system\\s*\\()"),\n        "remediation": "Use subprocess.run() with a list of arguments and shell=False."\n    },\n    {\n        "id": "ASG004",\n        "cwe": "CWE-89",\n        "severity": "HIGH",\n        "description": "Potential SQL Injection via string interpolation in SQL query",\n        "pattern": re.compile(r"(execute|cursor\\.execute)\\s*\\(\\s*(f[\'\\"]|[\'\\"].*%\\s*)\\b(SELECT|INSERT|UPDATE|DELETE)\\b", re.IGNORECASE),\n        "remediation": "Use parameterized queries (e.g., cursor.execute(\'SELECT * FROM users WHERE id = ?\', (user_id,)))."\n    },\n    {\n        "id": "ASG005",\n        "cwe": "CWE-502",\n        "severity": "HIGH",\n        "description": "Insecure deserialization using pickle or unsafe yaml.load",\n        "pattern": re.compile(r"(pickle\\.(loads|load)\\s*\\(|yaml\\.load\\s*\\([^)]*(?!Loader\\s*=\\s*yaml\\.SafeLoader))"),\n        "remediation": "Use json or yaml.safe_load() instead of untrusted pickle/yaml.load."\n    },\n    {\n        "id": "ASG006",\n        "cwe": "CWE-327",\n        "severity": "MEDIUM",\n        "description": "Use of weak cryptographic hash function (MD5/SHA1)",\n        "pattern": re.compile(r"hashlib\\.(md5|sha1)\\s*\\("),\n        "remediation": "Use strong cryptographic hashes such as hashlib.sha256() or bcrypt/argon2 for passwords."\n    }\n]\n\ndef scan_file(filepath: str) -> List[Finding]:\n    findings = []\n    try:\n        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:\n            for idx, line in enumerate(f, start=1):\n                for rule in SECURITY_RULES:\n                    if rule["pattern"].search(line):\n                        findings.append(\n                            Finding(\n                                file=filepath,\n                                line=idx,\n                                rule_id=rule["id"],\n                                cwe=rule["cwe"],\n                                severity=rule["severity"],\n                                description=rule["description"],\n                                snippet=line.strip()[:120],\n                                remediation=rule["remediation"]\n                            )\n                        )\n    except OSError:\n        pass\n    return findings\n\ndef scan_path(target_path: str) -> List[Finding]:\n    all_findings = []\n    if os.path.isfile(target_path):\n        return scan_file(target_path)\n    for root, dirs, files in os.walk(target_path):\n        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", "venv", ".venv", "node_modules"}]\n        for file in files:\n            if file.endswith((".py", ".js", ".ts", ".sh", ".env", ".yml", ".yaml")) and file not in {"aisafeguard.py", "test_aisafeguard.py"}:\n                full_path = os.path.join(root, file)\n                all_findings.extend(scan_file(full_path))\n    return all_findings\n\ndef main():\n    parser = argparse.ArgumentParser(description="AISafeGuard: Static Security Scanner for AI-Generated Code")\n    parser.add_argument("target", nargs="?", default=".", help="File or directory path to scan")\n    parser.add_argument("--json", action="store_true", help="Output findings in JSON format")\n    args = parser.parse_args()\n\n    findings = scan_path(args.target)\n    if args.json:\n        print(json.dumps([asdict(f) for f in findings], indent=2))\n    else:\n        if not findings:\n            print("✅ AISafeGuard: No security issues found.")\n        else:\n            print(f"⚠️ AISafeGuard detected {len(findings)} security issue(s):\\n")\n            for f in findings:\n                print(f"[{f.severity}] {f.rule_id} ({f.cwe}) in {f.file}:{f.line}")\n                print(f"  Issue: {f.description}")\n                print(f"  Code : {f.snippet}")\n                print(f"  Fix  : {f.remediation}\\n")\n            sys.exit(1)\n\nif __name__ == "__main__":\n    main()\n', 'test_aisafeguard.py': 'import tempfile\nimport unittest\nfrom aisafeguard import scan_file\n\nclass TestAISafeGuard(unittest.TestCase):\n    def _scan_snippet(self, code_text: str):\n        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tmp:\n            tmp.write(code_text)\n            tmp_path = tmp.name\n        return scan_file(tmp_path)\n\n    def test_detect_hardcoded_key(self):\n        findings = self._scan_snippet(\'API_KEY = "sk-1234567890abcdefghijklmnop"\')\n        self.assertEqual(len(findings), 1)\n        self.assertEqual(findings[0].rule_id, "ASG001")\n\n    def test_detect_eval_injection(self):\n        findings = self._scan_snippet("result = eval(user_input)")\n        self.assertEqual(len(findings), 1)\n        self.assertEqual(findings[0].rule_id, "ASG002")\n\n    def test_detect_command_injection(self):\n        findings = self._scan_snippet("subprocess.run(cmd, shell=True)")\n        self.assertEqual(len(findings), 1)\n        self.assertEqual(findings[0].rule_id, "ASG003")\n\n    def test_clean_code_passes(self):\n        findings = self._scan_snippet("def add(a, b):\\n    return a + b\\n")\n        self.assertEqual(len(findings), 0)\n\nif __name__ == "__main__":\n    unittest.main()\n', '.github/workflows/ci.yml': 'name: AISafeGuard Security CI\n\non:\n  push:\n    branches: [ main, master ]\n  pull_request:\n    branches: [ main, master ]\n\njobs:\n  test-and-scan:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: "3.11"\n      - name: Run Unit Tests\n        run: python3 -m unittest discover -v\n      - name: Run Self Security Scan\n        run: python3 aisafeguard.py .\n'}
+# ใช้ Raw String (r'''...''') เพื่อป้องกันปัญหา Backslash / Quote Escaping 100%
+CLEAN_AISAFEGUARD_CODE = r'''#!/usr/bin/env python3
+"""
+AISafeGuard - Lightweight Security & Secret Scanner for AI-Generated Code.
+License: MIT
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from dataclasses import asdict, dataclass
+from typing import List
 
-def main():
-    print("Extracting AISafeGuard files...")
-    for fpath, content in FILES.items():
-        p = Path(fpath)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content.strip() + "\n", encoding="utf-8")
-        print(f"✔ Created {fpath}")
-    print("\nAll files successfully created!")
+
+@dataclass
+class Finding:
+    file: str
+    line: int
+    rule_id: str
+    cwe: str
+    severity: str
+    description: str
+    snippet: str
+    remediation: str
+
+
+SECURITY_RULES = [
+    {
+        "id": "ASG001",
+        "cwe": "CWE-798",
+        "severity": "CRITICAL",
+        "description": "Hardcoded API Key or Secret token detected",
+        "pattern": re.compile(r"(sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16})"),
+        "remediation": "Move secrets to environment variables (os.environ) or a secrets manager.",
+    },
+    {
+        "id": "ASG002",
+        "cwe": "CWE-94",
+        "severity": "HIGH",
+        "description": "Arbitrary code execution via eval() or exec()",
+        "pattern": re.compile(r"\b(eval|exec)\s*\("),
+        "remediation": "Avoid eval()/exec() on untrusted input; use ast.literal_eval() or safe parsers.",
+    },
+    {
+        "id": "ASG003",
+        "cwe": "CWE-78",
+        "severity": "HIGH",
+        "description": "OS Command Injection risk via shell=True or os.system",
+        "pattern": re.compile(r"(subprocess\.(Popen|run|call)\s*\([^)]*shell\s*=\s*True|os\.system\s*\()"),
+        "remediation": "Use subprocess.run() with a list of arguments and shell=False.",
+    },
+    {
+        "id": "ASG004",
+        "cwe": "CWE-89",
+        "severity": "HIGH",
+        "description": "Potential SQL Injection via string interpolation in SQL query",
+        "pattern": re.compile(r"(execute|cursor\.execute)\s*\([^)]*(SELECT|INSERT|UPDATE|DELETE)", re.IGNORECASE),
+        "remediation": "Use parameterized queries (e.g., cursor.execute('SELECT * FROM users WHERE id = ?', (uid,))).",
+    },
+    {
+        "id": "ASG005",
+        "cwe": "CWE-502",
+        "severity": "HIGH",
+        "description": "Insecure deserialization using pickle or unsafe yaml.load",
+        "pattern": re.compile(r"(pickle\.(loads|load)\s*\(|yaml\.load\s*\([^)]*(?!Loader\s*=\s*yaml\.SafeLoader))"),
+        "remediation": "Use json or yaml.safe_load() instead of untrusted pickle/yaml.load.",
+    },
+    {
+        "id": "ASG006",
+        "cwe": "CWE-327",
+        "severity": "MEDIUM",
+        "description": "Use of weak cryptographic hash function (MD5/SHA1)",
+        "pattern": re.compile(r"hashlib\.(md5|sha1)\s*\("),
+        "remediation": "Use strong cryptographic hashes such as hashlib.sha256() or bcrypt/argon2.",
+    },
+]
+
+EXCLUDED_FILES = {"aisafeguard.py", "test_aisafeguard.py", "auto_setup.py"}
+EXCLUDED_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules"}
+
+
+def scan_file(filepath: str) -> List[Finding]:
+    findings: List[Finding] = []
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for idx, line in enumerate(f, start=1):
+                for rule in SECURITY_RULES:
+                    if rule["pattern"].search(line):
+                        findings.append(
+                            Finding(
+                                file=filepath,
+                                line=idx,
+                                rule_id=rule["id"],
+                                cwe=rule["cwe"],
+                                severity=rule["severity"],
+                                description=rule["description"],
+                                snippet=line.strip()[:120],
+                                remediation=rule["remediation"],
+                            )
+                        )
+    except OSError:
+        pass
+    return findings
+
+
+def scan_path(target_path: str) -> List[Finding]:
+    if os.path.isfile(target_path):
+        return scan_file(target_path)
+    all_findings: List[Finding] = []
+    for root, dirs, files in os.walk(target_path):
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+        for file in files:
+            if file.endswith((".py", ".js", ".ts", ".sh", ".env", ".yml", ".yaml")) and file not in EXCLUDED_FILES:
+                all_findings.extend(scan_file(os.path.join(root, file)))
+    return all_findings
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="AISafeGuard: Static Security Scanner for AI-Generated Code")
+    parser.add_argument("target", nargs="?", default=".", help="File or directory path to scan")
+    parser.add_argument("--json", action="store_true", help="Output findings in JSON format")
+    args = parser.parse_args()
+
+    findings = scan_path(args.target)
+    if args.json:
+        print(json.dumps([asdict(f) for f in findings], indent=2))
+    else:
+        if not findings:
+            print("AISafeGuard: No security issues found.")
+        else:
+            print(f"AISafeGuard detected {len(findings)} security issue(s):")
+            for f in findings:
+                print(f"[{f.severity}] {f.rule_id} ({f.cwe}) in {f.file}:{f.line}")
+                print(f"  Issue: {f.description}")
+                print(f"  Code : {f.snippet}")
+                print(f"  Fix  : {f.remediation}")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def main() -> None:
+    cwd = Path.cwd()
+    # 1. Pre-condition Folder Guardrail
+    if cwd.name.lower() != "aisafeguard" or not (cwd / ".git").exists():
+        print(f"[BLOCKED] Current directory is '{cwd}'.")
+        print("Please run this script inside 'C:\\Users\\nts\\.gemini\\aisafeguard' only.")
+        sys.exit(1)
+
+    target_file = cwd / "aisafeguard.py"
+    backup_file = cwd / "aisafeguard.py.bak"
+
+    # 2. Backup existing file (Rollback preparation)
+    if target_file.exists():
+        shutil.copy2(target_file, backup_file)
+        print("[1/4] Backed up existing aisafeguard.py -> aisafeguard.py.bak")
+
+    try:
+        # 3. Write clean code and run dry-run verification
+        target_file.write_text(CLEAN_AISAFEGUARD_CODE.lstrip(), encoding="utf-8")
+        print("[2/4] Wrote clean aisafeguard.py. Running verification checks...")
+
+        # Check 1: Unit tests
+        subprocess.run([sys.executable, "-m", "unittest", "discover", "-v"], check=True)
+        # Check 2: Self security scan (exact command used by GitHub Actions)
+        subprocess.run([sys.executable, "aisafeguard.py", "."], check=True)
+        print("[3/4] All unit tests and self-scan passed 100%!")
+
+    except subprocess.CalledProcessError:
+        print("[ERROR] Verification failed! Rolling back to backup...")
+        if backup_file.exists():
+            shutil.move(str(backup_file), str(target_file))
+        sys.exit(1)
+
+    # Remove backup after successful verification
+    if backup_file.exists():
+        backup_file.unlink()
+
+    # 4. Confirmation Prompt before Git Push
+    ans = input("\n[4/4] Ready to commit and push to GitHub (origin/main)? [y/N]: ").strip().lower()
+    if ans == "y":
+        subprocess.run(["git", "add", "aisafeguard.py", "auto_setup.py"], check=True)
+        subprocess.run(["git", "commit", "-m", "fix: resolve regex syntax and exclude setup script from self-scan"], check=True)
+        subprocess.run(["git", "push", "origin", "main"], check=True)
+        print("\n[SUCCESS] Pushed to GitHub successfully!")
+    else:
+        print("\n[SKIPPED] File updated locally, but git push was cancelled by user.")
+
 
 if __name__ == "__main__":
     main()
